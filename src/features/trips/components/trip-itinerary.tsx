@@ -1,5 +1,4 @@
 "use client"
-
 import { useState, useEffect } from "react"
 import { GeneratedTripResponse, GeneratedTripDay } from "@/types/trip"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -7,6 +6,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Map, Calendar, DollarSign, Lightbulb, Coffee, MapPin, CloudRain, Sun, AlertTriangle, RefreshCw, Loader2, Navigation, Share2, Download } from "lucide-react"
 import React from "react"
+import dynamic from "next/dynamic"
+
+const TripMap = dynamic(() => import("./trip-map"), {
+  ssr: false,
+  loading: () => <div className="h-[400px] w-full rounded-md border flex items-center justify-center bg-muted/50 animate-pulse">Loading map...</div>
+})
 
 // Memoized Day Card Component for Performance
 const MemoizedDayCard = React.memo(({ 
@@ -143,6 +148,7 @@ export function TripItinerary({ trip: initialTrip }: TripItineraryProps) {
           weather,
           plannedBudget: tripData.plannedBudget,
           constraints: tripData.constraints,
+          tripId: (tripData as any).id, // From Supabase
         }),
       });
 
@@ -291,6 +297,10 @@ export function TripItinerary({ trip: initialTrip }: TripItineraryProps) {
         <div className="flex items-center justify-between border-b pb-2">
           <h2 className="text-2xl font-bold">Daily Itinerary</h2>
           {replanError && <span className="text-sm text-destructive">{replanError}</span>}
+        </div>
+        
+        <div className="w-full">
+          <TripMap days={tripData.days} />
         </div>
         
         {tripData.days.map((day) => (

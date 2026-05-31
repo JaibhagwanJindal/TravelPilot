@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { createClient } from '@/lib/supabase/server';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -13,6 +14,7 @@ export async function POST(request: Request) {
       weather,
       plannedBudget,
       constraints,
+      tripId,
     } = body;
 
     const prompt = `You are an expert travel planner. The user wants to REPLAN a single day of their trip based on new circumstances.
@@ -61,7 +63,7 @@ export async function POST(request: Request) {
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
     
-    let parsedData;
+    let parsedData: any;
     try {
       parsedData = JSON.parse(responseText);
     } catch (parseError) {
@@ -69,6 +71,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Failed to generate valid day itinerary format' }, { status: 500 });
     }
     
+    // If we have a tripId, update it in Supabase
+    if (tripId) {
+      try {
+        const supabase = await createClient();
+        
+        // Fetch the current trip
+        const { data: trip } = await supabase
+          .from('trips')
+          .select('itinerary')
+          .eq('id', tripId)
+          .single();
+          
+        if (trip && trip.itinerary && trip.itinerary.days) {
+          // Replace the specific day
+          const updatedDays = trip.itinerary.days.map((d: any) => 
+            d.day === parsedData.day ? parsedData : d
+          );
+          
+          const newItinerary = {
+            ...trip.itinerary,
+            days: updatedDays
+          };
+          
+          // Save back to Supabase
+          await supabase
+            .from('trips')
+            .update({ itinerary: newItinerary })
+            .eq('id', tripId);
+        }
+      } catch (dbErr) {
+        console.error("Failed to update trip in Supabase:", dbErr);
+      }
+    }
+
     return NextResponse.json({ success: true, data: parsedData });
   } catch (error) {
     console.error("Error replanning trip day:", error);

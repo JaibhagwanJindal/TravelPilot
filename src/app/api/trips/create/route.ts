@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { createClient } from '@/lib/supabase/server';
 
 // Simple in-memory rate limiting
 const rateLimitMap = new Map<string, { count: number, resetTime: number }>();
@@ -54,46 +55,39 @@ export async function POST(request: Request) {
     Planned Budget Amount: $${plannedBudget}
     Number of Travelers: ${travelers}
     Travel Style: ${travelStyle}
-    Interests: ${interests}
-    Transportation Preference: ${transportation}
-    Constraints & Requirements: ${constraints?.length ? constraints.join(", ") : "None"}
-    
-    IMPORTANT: You must act as a Route Optimizer. Order the activities logically by geographic proximity to minimize transit time between locations.
-    
-    You MUST return the output exclusively as a valid JSON object matching the exact structure below, with no markdown formatting, no code blocks, and no extra text.
-    
+    Interests: ${interests.join(', ')}
+    Constraints: ${constraints ? constraints.join(', ') : 'None'}
+
+    Your goal is to optimize the route each day to minimize transit times.
+
+    Return the itinerary strictly in the following JSON format:
     {
       "tripName": "A catchy name for the trip",
-      "destination": "The destination name",
-      "summary": "A short 2-3 sentence summary of the trip",
-      "estimatedBudget": {
-        "total": 0,
-        "currency": "USD",
-        "breakdown": {
-          "accommodation": 0,
-          "food": 0,
-          "activities": 0,
-          "transportation": 0
-        }
-      },
+      "destination": "${destination}",
+      "summary": "A brief summary of the trip",
+      "estimatedBudget": { "total": <number>, "currency": "USD" },
       "days": [
         {
-          "day": 1,
-          "title": "Title of the day's theme or main area",
+          "day": <number>,
+          "title": "Day title (e.g. Exploring the Historical Center)",
           "activities": [
             {
-              "title": "Activity Name",
+              "title": "Activity name",
+              "description": "Activity description",
               "location": "Specific location or address",
-              "description": "Brief description of what to do",
-              "estimatedTransitTime": "15 mins walking"
+              "lat": <number_latitude_approximate>,
+              "lng": <number_longitude_approximate>,
+              "estimatedCost": <number>,
+              "estimatedTransitTime": "e.g. 15 mins walk to next location"
             }
           ],
-          "foodRecommendations": ["Restaurant 1", "Restaurant 2"],
-          "estimatedCost": 0
+          "foodRecommendations": ["Food 1", "Food 2"],
+          "estimatedCost": <number_total_cost_for_day>
         }
       ],
-      "travelTips": ["Tip 1", "Tip 2", "Tip 3"]
-    }`;
+      "travelTips": ["Tip 1", "Tip 2"]
+    }
+  `;
 
     // Note: In production you should ensure GEMINI_API_KEY is present
     if (!process.env.GEMINI_API_KEY) {
@@ -110,18 +104,37 @@ export async function POST(request: Request) {
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
     
-    let parsedData: any;
+    const parsedData = JSON.parse(responseText);
+
+    // Save to Supabase
     try {
-      parsedData = JSON.parse(responseText);
-      parsedData.plannedBudget = plannedBudget;
-      parsedData.constraints = constraints || [];
-    } catch (parseError) {
-      console.error("Failed to parse Gemini response as JSON:", responseText);
-      return NextResponse.json({ success: false, error: 'Failed to generate valid itinerary format' }, { status: 500 });
+      const supabase = await createClient();
+      const { data: insertedTrip, error } = await supabase
+        .from('trips')
+        .insert({
+          trip_name: parsedData.tripName,
+          destination: parsedData.destination,
+          start_date: startDate,
+          end_date: endDate,
+          budget: plannedBudget ? parseFloat(plannedBudget.toString()) : null,
+          itinerary: parsedData
+        })
+        .select()
+        .single();
+        
+      if (error) {
+        console.error("Failed to save trip to Supabase:", error);
+        // Continue anyway to return the itinerary to the user, even if DB fails
+      } else {
+        // Embed the database ID into the response so we can update it later
+        parsedData.id = insertedTrip.id;
+      }
+    } catch (dbError) {
+      console.error("Supabase error:", dbError);
     }
     
     return NextResponse.json({ success: true, data: parsedData });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating trip:", error);
     return NextResponse.json({ success: false, error: 'Failed to create trip' }, { status: 500 });
   }
