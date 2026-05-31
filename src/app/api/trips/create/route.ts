@@ -1,49 +1,108 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@/lib/supabase/server';
+import { callGeminiResilient, parseAndNormaliseItinerary } from '@/lib/gemini-resilient';
 import { z } from 'zod';
 
 // ─── Rate Limiting ─────────────────────────────────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT = 5;
-const WINDOW_MS = 60000;
+const WINDOW_MS  = 60_000;
 
 // ─── Request Validation Schema ─────────────────────────────────────────────────
 const createTripSchema = z.object({
-  destination: z.string().min(2, 'Destination too short'),
-  dateRange: z.object({
-    from: z.string().or(z.date()),
-    to: z.string().or(z.date()),
-  }),
-  budget: z.enum(['Budget', 'Moderate', 'Luxury']).optional().default('Moderate'),
+  destination:   z.string().min(2, 'Destination too short'),
+  dateRange:     z.object({ from: z.string().or(z.date()), to: z.string().or(z.date()) }),
+  budget:        z.enum(['Budget', 'Moderate', 'Luxury']).optional().default('Moderate'),
   plannedBudget: z.union([z.string(), z.number()]).optional(),
-  travelers: z.union([z.string(), z.number()]).optional().default(1),
-  travelStyle: z.string().optional().default('Relaxed'),
-  // interests can arrive as a string (textarea) or array — handle both
-  interests: z.union([z.string(), z.array(z.string())]).optional(),
+  travelers:     z.union([z.string(), z.number()]).optional().default(1),
+  travelStyle:   z.string().optional().default('Relaxed'),
+  interests:     z.union([z.string(), z.array(z.string())]).optional(),
   transportation: z.string().optional(),
-  // constraints can arrive as an array or undefined
-  constraints: z.array(z.string()).optional().default([]),
+  constraints:   z.array(z.string()).optional().default([]),
 });
 
-// ─── Helper ────────────────────────────────────────────────────────────────────
-/** Normalise interests: string → string, array → comma-joined string */
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 function normaliseInterests(value: unknown): string {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ');
   if (typeof value === 'string') return value.trim();
   return '';
 }
 
-/** Always return a safe string[] for any array-like field */
 function safeArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.filter((v) => typeof v === 'string');
   if (typeof value === 'string' && value.trim()) return [value.trim()];
   return [];
 }
 
+/** Emergency itinerary returned when all AI providers are unavailable */
+function buildEmergencyItinerary(params: {
+  destination: string;
+  durationDays: number;
+  budgetNum: number;
+  constraintsArr: string[];
+}) {
+  const { destination, durationDays, budgetNum, constraintsArr } = params;
+  const dailyCost = budgetNum > 0 ? Math.round(budgetNum / durationDays) : 100;
+
+  return {
+    tripName:        `Your Trip to ${destination}`,
+    destination,
+    summary:
+      `A ${durationDays}-day trip to ${destination}. ` +
+      `Our AI is temporarily unavailable, so this is a starter template — ` +
+      `tap "Replan Day" on any day once the service recovers to get personalised suggestions.`,
+    estimatedBudget: { total: budgetNum || durationDays * 100, currency: 'USD' },
+    days: Array.from({ length: durationDays }, (_, i) => ({
+      day:   i + 1,
+      title: `Day ${i + 1} — Explore ${destination}`,
+      activities: [
+        {
+          title:                `Morning exploration of ${destination}`,
+          description:          'Start your day by visiting the most popular local attractions.',
+          location:             destination,
+          lat:                  0,
+          lng:                  0,
+          estimatedCost:        Math.round(dailyCost * 0.3),
+          estimatedTransitTime: 'Varies',
+        },
+        {
+          title:                'Afternoon cultural experience',
+          description:          'Visit a local museum, gallery, or cultural landmark.',
+          location:             destination,
+          lat:                  0,
+          lng:                  0,
+          estimatedCost:        Math.round(dailyCost * 0.3),
+          estimatedTransitTime: 'Varies',
+        },
+        {
+          title:                'Evening dining & leisure',
+          description:          'Enjoy local cuisine at a highly-rated restaurant.',
+          location:             destination,
+          lat:                  0,
+          lng:                  0,
+          estimatedCost:        Math.round(dailyCost * 0.4),
+          estimatedTransitTime: 'Varies',
+        },
+      ],
+      foodRecommendations: ['Local specialties', 'Street food', 'Nearby restaurants'],
+      estimatedCost:       dailyCost,
+    })),
+    travelTips: [
+      `Research the local currency and tipping customs before you arrive in ${destination}.`,
+      'Keep digital and physical copies of all important documents.',
+      'Download offline maps for navigation without roaming charges.',
+      constraintsArr.length > 0
+        ? `Your requirements (${constraintsArr.join(', ')}) — verify options locally before booking.`
+        : 'Book popular attractions in advance to avoid queues.',
+    ].filter(Boolean),
+    _note: 'This is an AI-unavailable emergency template. Use "Replan Day" to get AI-generated activities.',
+  };
+}
+
 // ─── Route ─────────────────────────────────────────────────────────────────────
 export async function POST(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') || 'anonymous';
+  // ── Rate limiting ─────────────────────────────────────────────────────────────
+  const ip  = request.headers.get('x-forwarded-for') || 'anonymous';
   const now = Date.now();
 
   let rateData = rateLimitMap.get(ip);
@@ -59,17 +118,15 @@ export async function POST(request: Request) {
     }
   }
 
+  // ── Parse body ────────────────────────────────────────────────────────────────
   let rawBody: unknown;
   try {
     rawBody = await request.json();
   } catch {
-    return NextResponse.json(
-      { success: false, error: 'Invalid JSON body.' },
-      { status: 400 }
-    );
+    return NextResponse.json({ success: false, error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  // ── Validate & parse incoming payload ────────────────────────────────────────
+  // ── Zod validation ────────────────────────────────────────────────────────────
   const parsed = createTripSchema.safeParse(rawBody);
   if (!parsed.success) {
     const fieldErrors = parsed.error.flatten().fieldErrors;
@@ -92,40 +149,35 @@ export async function POST(request: Request) {
     constraints: rawConstraints,
   } = parsed.data;
 
-  // ── Normalise values ─────────────────────────────────────────────────────────
-  const interestsStr = normaliseInterests(rawInterests) || 'General sightseeing';
-  const constraintsArr = safeArray(rawConstraints);
-
-  console.log('[create/route] Received payload:', {
-    destination,
-    budget,
-    plannedBudget,
-    travelers,
-    travelStyle,
-    interestsStr,
-    constraintsArr,
-    transportation,
-  });
+  const interestsStr    = normaliseInterests(rawInterests) || 'General sightseeing';
+  const constraintsArr  = safeArray(rawConstraints);
 
   // ── Date handling ─────────────────────────────────────────────────────────────
   let startDate: Date;
-  let endDate: Date;
+  let endDate:   Date;
   try {
     startDate = new Date(dateRange.from as string);
-    endDate = new Date(dateRange.to as string);
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      throw new Error('Invalid date values');
-    }
+    endDate   = new Date(dateRange.to   as string);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) throw new Error();
   } catch {
-    return NextResponse.json(
-      { success: false, error: 'Invalid date range provided.' },
-      { status: 400 }
-    );
+    return NextResponse.json({ success: false, error: 'Invalid date range provided.' }, { status: 400 });
   }
 
-  const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+  const diffTime    = Math.abs(endDate.getTime() - startDate.getTime());
   const durationDays = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1);
-  const budgetNum = plannedBudget ? parseFloat(plannedBudget.toString()) : 0;
+  const budgetNum   = plannedBudget ? parseFloat(plannedBudget.toString()) : 0;
+
+  console.log('[create/route] Payload:', { destination, budget, budgetNum, travelers, travelStyle, interestsStr, constraintsArr });
+
+  // ── Check API key ─────────────────────────────────────────────────────────────
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.warn('[create/route] GEMINI_API_KEY missing — returning emergency template');
+    const emergency: any = buildEmergencyItinerary({ destination, durationDays, budgetNum, constraintsArr });
+    emergency.plannedBudget  = budgetNum;
+    emergency.constraints    = constraintsArr;
+    return NextResponse.json({ success: true, data: emergency, _warning: 'AI service not configured' });
+  }
 
   // ── Build prompt ──────────────────────────────────────────────────────────────
   const prompt = `You are an expert travel planner. Create a detailed trip itinerary based on the following preferences:
@@ -170,52 +222,24 @@ Return ONLY a valid JSON object matching this exact structure (no markdown, no c
   "travelTips": ["Tip 1", "Tip 2", "Tip 3"]
 }`;
 
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn('[create/route] GEMINI_API_KEY is missing!');
-    return NextResponse.json(
-      { success: false, error: 'AI service is not configured.' },
-      { status: 503 }
-    );
-  }
+  // ── Call Gemini (with retry + model fallback + emergency template) ─────────────
+  const emergencyTemplate = buildEmergencyItinerary({ destination, durationDays, budgetNum, constraintsArr });
 
-  // ── Call Gemini ───────────────────────────────────────────────────────────────
-  let parsedData: any;
-  try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: { responseMimeType: 'application/json' },
-    });
+  const geminiResult = await callGeminiResilient(apiKey, { prompt }, emergencyTemplate);
 
-    console.log('[create/route] Sending prompt to Gemini...');
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-    console.log('[create/route] Gemini raw response length:', responseText.length);
+  console.log('[create/route] Gemini result — model:', geminiResult.usedModel, '| emergency:', geminiResult.isEmergencyFallback);
 
-    parsedData = JSON.parse(responseText);
+  const parsedData = parseAndNormaliseItinerary(geminiResult.text);
 
-    // Defensive normalization of Gemini's response
-    if (!Array.isArray(parsedData.days)) parsedData.days = [];
-    if (!Array.isArray(parsedData.travelTips)) parsedData.travelTips = [];
+  // Ensure required top-level fields are always present
+  if (!parsedData.tripName)        parsedData.tripName        = emergencyTemplate.tripName;
+  if (!parsedData.destination)     parsedData.destination     = destination;
+  if (!parsedData.summary)         parsedData.summary         = emergencyTemplate.summary;
+  if (!parsedData.estimatedBudget) parsedData.estimatedBudget = emergencyTemplate.estimatedBudget;
+  if (parsedData.days.length === 0) parsedData.days           = emergencyTemplate.days;
 
-    parsedData.days = parsedData.days.map((day: any) => ({
-      ...day,
-      activities: Array.isArray(day.activities) ? day.activities : [],
-      foodRecommendations: Array.isArray(day.foodRecommendations) ? day.foodRecommendations : [],
-      estimatedCost: typeof day.estimatedCost === 'number' ? day.estimatedCost : 0,
-    }));
-
-    // Attach meta fields needed by the frontend
-    parsedData.plannedBudget = budgetNum;
-    parsedData.constraints = constraintsArr;
-
-  } catch (geminiError: any) {
-    console.error('[create/route] Gemini error:', geminiError?.message || geminiError);
-    return NextResponse.json(
-      { success: false, error: 'Failed to generate itinerary. Please try again.' },
-      { status: 500 }
-    );
-  }
+  parsedData.plannedBudget  = budgetNum;
+  parsedData.constraints    = constraintsArr;
 
   // ── Save to Supabase (non-blocking) ───────────────────────────────────────────
   try {
@@ -223,12 +247,12 @@ Return ONLY a valid JSON object matching this exact structure (no markdown, no c
     const { data: insertedTrip, error: dbError } = await supabase
       .from('trips')
       .insert({
-        trip_name: parsedData.tripName,
+        trip_name:  parsedData.tripName,
         destination: parsedData.destination,
-        start_date: startDate.toISOString(),
-        end_date: endDate.toISOString(),
-        budget: budgetNum,
-        itinerary: parsedData,
+        start_date:  startDate.toISOString(),
+        end_date:    endDate.toISOString(),
+        budget:      budgetNum,
+        itinerary:   parsedData,
       })
       .select()
       .single();
@@ -237,12 +261,16 @@ Return ONLY a valid JSON object matching this exact structure (no markdown, no c
       console.error('[create/route] Supabase insert error:', dbError.message);
     } else if (insertedTrip) {
       parsedData.id = insertedTrip.id;
-      console.log('[create/route] Trip saved to Supabase, id:', insertedTrip.id);
+      console.log('[create/route] Trip saved, id:', insertedTrip.id);
     }
   } catch (dbErr: any) {
-    console.error('[create/route] Supabase exception:', dbErr?.message || dbErr);
-    // Non-fatal — still return the generated itinerary
+    console.error('[create/route] Supabase exception:', dbErr?.message ?? dbErr);
   }
 
-  return NextResponse.json({ success: true, data: parsedData });
+  const response: any = { success: true, data: parsedData };
+  if (geminiResult.isEmergencyFallback) {
+    response._warning = 'AI service temporarily unavailable. This is a template itinerary — use Replan Day to customise.';
+  }
+
+  return NextResponse.json(response);
 }
