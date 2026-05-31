@@ -8,10 +8,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: false, error: 'Destination is required' }, { status: 400 });
   }
 
-  const apiKey = process.env.OPENWEATHERMAP_API_KEY;
+  const apiKey = process.env.OPENWEATHER_API_KEY;
 
   if (!apiKey) {
-    console.warn("OPENWEATHERMAP_API_KEY is not set. Returning mock weather data.");
+    console.warn("OPENWEATHER_API_KEY is not set. Returning mock weather data.");
     // Return mock data so the app doesn't break if they haven't set the key yet.
     return NextResponse.json({
       success: true,

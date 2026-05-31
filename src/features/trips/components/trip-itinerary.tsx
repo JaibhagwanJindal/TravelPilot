@@ -5,7 +5,97 @@ import { GeneratedTripResponse, GeneratedTripDay } from "@/types/trip"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Map, Calendar, DollarSign, Lightbulb, Coffee, MapPin, CloudRain, Sun, AlertTriangle, RefreshCw, Loader2, Navigation, CloudLightning, Wind } from "lucide-react"
+import { Map, Calendar, DollarSign, Lightbulb, Coffee, MapPin, CloudRain, Sun, AlertTriangle, RefreshCw, Loader2, Navigation, Share2, Download } from "lucide-react"
+import React from "react"
+
+// Memoized Day Card Component for Performance
+const MemoizedDayCard = React.memo(({ 
+  day, 
+  currency,
+  replanningDay,
+  handleReplanDay
+}: { 
+  day: GeneratedTripDay; 
+  currency: string;
+  replanningDay: number | null;
+  handleReplanDay: (day: GeneratedTripDay) => void;
+}) => {
+  return (
+    <Card className="overflow-hidden">
+      <div className="bg-primary/5 border-b px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-bold flex items-center gap-2">
+            <Badge variant="default" className="text-base">Day {day.day}</Badge>
+            {day.title}
+          </h3>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground bg-background px-3 py-1 rounded-full shadow-sm">
+            <DollarSign className="h-4 w-4" aria-label="Cost" /> ${day.estimatedCost}
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm"
+            disabled={replanningDay === day.day}
+            onClick={() => handleReplanDay(day)}
+            className="gap-2"
+            aria-label={`Replan Day ${day.day}`}
+          >
+            {replanningDay === day.day ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Replan Day
+          </Button>
+        </div>
+      </div>
+      
+      <CardContent className="p-6 grid gap-6 md:grid-cols-2">
+        <div className="space-y-4">
+          <h4 className="font-semibold flex items-center gap-2 text-primary">
+            <Navigation className="h-4 w-4" aria-hidden="true" /> Optimized Route
+          </h4>
+          <div className="space-y-4 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px before:h-full before:w-0.5 before:bg-gradient-to-b before:from-border before:to-transparent">
+            {day.activities.map((activity, i) => (
+              <div key={i} className="relative flex items-start gap-4 pl-8">
+                 <div className="absolute left-0 w-6 h-6 rounded-full bg-background border-2 border-primary flex items-center justify-center -translate-x-[1px] mt-0.5">
+                   <span className="text-[10px] font-bold">{i + 1}</span>
+                 </div>
+                 <div className="flex flex-col">
+                   <span className="font-semibold text-sm">{activity.title}</span>
+                   <span className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                     <MapPin className="h-3 w-3" aria-hidden="true" /> {activity.location}
+                   </span>
+                   <p className="text-sm mt-1">{activity.description}</p>
+                   {activity.estimatedTransitTime && (
+                     <span className="text-xs text-blue-500 mt-1 font-medium bg-blue-50 dark:bg-blue-900/30 w-fit px-2 py-0.5 rounded-sm">
+                       Next stop: {activity.estimatedTransitTime}
+                     </span>
+                   )}
+                 </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        
+        <div className="space-y-4">
+          <h4 className="font-semibold flex items-center gap-2 text-orange-500">
+            <Coffee className="h-4 w-4" aria-hidden="true" /> Food & Dining
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {day.foodRecommendations.map((food, i) => (
+              <Badge key={i} variant="outline" className="bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20 py-1 px-3">
+                {food}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+});
+MemoizedDayCard.displayName = "MemoizedDayCard";
 
 interface TripItineraryProps {
   trip: GeneratedTripResponse;
@@ -73,22 +163,71 @@ export function TripItinerary({ trip: initialTrip }: TripItineraryProps) {
     }
   };
 
+  const handleExportPDF = async () => {
+    const element = document.getElementById("itinerary-content");
+    if (!element) return;
+    
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const jsPDF = (await import("jspdf")).default;
+      
+      const canvas = await html2canvas(element, { scale: 2 });
+      const imgData = canvas.toDataURL("image/jpeg", 1.0);
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
+      pdf.save("TravelPilot-Itinerary.pdf");
+    } catch (err) {
+      console.error("Failed to export PDF", err);
+    }
+  };
+
+  const handleShare = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: tripData.tripName,
+          text: `Check out my trip to ${tripData.destination}!`,
+          url: window.location.href,
+        });
+      } catch (err) {
+        console.error("Error sharing:", err);
+      }
+    } else {
+      alert("Sharing is not supported on this browser.");
+    }
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
-      <div className="space-y-4">
-        <h1 className="text-3xl font-bold tracking-tight">{tripData.tripName}</h1>
-        <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
-          <span className="flex items-center gap-1"><Map className="h-4 w-4" /> {tripData.destination}</span>
-          <span className="flex items-center gap-1"><Calendar className="h-4 w-4" /> {tripData.days.length} Days</span>
-          {tripData.constraints?.length > 0 && (
-            <span className="flex items-center gap-1 text-primary text-sm font-medium">
-              Constraints: {tripData.constraints.join(", ")}
-            </span>
-          )}
+      <div className="flex flex-col md:flex-row justify-between gap-4">
+        <div className="space-y-4">
+          <h1 className="text-3xl font-bold tracking-tight">{tripData.tripName}</h1>
+          <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
+            <span className="flex items-center gap-1"><Map className="h-4 w-4" /> {tripData.destination}</span>
+            <span className="flex items-center gap-1"><Calendar className="h-4 w-4" /> {tripData.days.length} Days</span>
+            {tripData.constraints?.length > 0 && (
+              <span className="flex items-center gap-1 text-primary text-sm font-medium">
+                Constraints: {tripData.constraints.join(", ")}
+              </span>
+            )}
+          </div>
+          <p className="text-lg">{tripData.summary}</p>
         </div>
-        <p className="text-lg">{tripData.summary}</p>
+        
+        <div className="flex items-start gap-2">
+          <Button variant="outline" size="sm" onClick={handleShare} className="gap-2">
+            <Share2 className="h-4 w-4" /> Share
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPDF} className="gap-2">
+            <Download className="h-4 w-4" /> Export PDF
+          </Button>
+        </div>
       </div>
 
+      <div id="itinerary-content" className="space-y-8">
       {weather && (
         <Card className="bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border-blue-200 dark:border-blue-900">
           <CardContent className="p-4 flex items-center justify-between flex-wrap gap-4">
@@ -155,78 +294,15 @@ export function TripItinerary({ trip: initialTrip }: TripItineraryProps) {
         </div>
         
         {tripData.days.map((day) => (
-          <Card key={day.day} className="overflow-hidden">
-            <div className="bg-primary/5 border-b px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-xl font-bold flex items-center gap-2">
-                  <Badge variant="default" className="text-base">Day {day.day}</Badge>
-                  {day.title}
-                </h3>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground bg-background px-3 py-1 rounded-full shadow-sm">
-                  <DollarSign className="h-4 w-4" /> ${day.estimatedCost}
-                </div>
-                <Button 
-                  variant="outline" 
-                  size="sm"
-                  disabled={replanningDay === day.day}
-                  onClick={() => handleReplanDay(day)}
-                  className="gap-2"
-                >
-                  {replanningDay === day.day ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                  Replan Day
-                </Button>
-              </div>
-            </div>
-            
-            <CardContent className="p-6 grid gap-6 md:grid-cols-2">
-              <div className="space-y-4">
-                <h4 className="font-semibold flex items-center gap-2 text-primary">
-                  <Navigation className="h-4 w-4" /> Optimized Route
-                </h4>
-                <div className="space-y-4 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px before:h-full before:w-0.5 before:bg-gradient-to-b before:from-border before:to-transparent">
-                  {day.activities.map((activity, i) => (
-                    <div key={i} className="relative flex items-start gap-4 pl-8">
-                       <div className="absolute left-0 w-6 h-6 rounded-full bg-background border-2 border-primary flex items-center justify-center -translate-x-[1px] mt-0.5">
-                         <span className="text-[10px] font-bold">{i + 1}</span>
-                       </div>
-                       <div className="flex flex-col">
-                         <span className="font-semibold text-sm">{activity.title}</span>
-                         <span className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                           <MapPin className="h-3 w-3" /> {activity.location}
-                         </span>
-                         <p className="text-sm mt-1">{activity.description}</p>
-                         {activity.estimatedTransitTime && (
-                           <span className="text-xs text-blue-500 mt-1 font-medium bg-blue-50 dark:bg-blue-900/30 w-fit px-2 py-0.5 rounded-sm">
-                             Next stop: {activity.estimatedTransitTime}
-                           </span>
-                         )}
-                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              
-              <div className="space-y-4">
-                <h4 className="font-semibold flex items-center gap-2 text-orange-500">
-                  <Coffee className="h-4 w-4" /> Food & Dining
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {day.foodRecommendations.map((food, i) => (
-                    <Badge key={i} variant="outline" className="bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20 py-1 px-3">
-                      {food}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <MemoizedDayCard 
+            key={day.day}
+            day={day}
+            currency={tripData.estimatedBudget.currency}
+            replanningDay={replanningDay}
+            handleReplanDay={handleReplanDay}
+          />
         ))}
+      </div>
       </div>
     </div>
   )

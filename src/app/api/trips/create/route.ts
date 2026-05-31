@@ -1,9 +1,31 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+// Simple in-memory rate limiting
+const rateLimitMap = new Map<string, { count: number, resetTime: number }>();
+const RATE_LIMIT = 5; // Max requests
+const WINDOW_MS = 60000; // Per minute
 
 export async function POST(request: Request) {
+  // Extract IP for rate limiting (simplistic approach for Next.js app router)
+  const ip = request.headers.get('x-forwarded-for') || 'anonymous';
+  const now = Date.now();
+  
+  let rateData = rateLimitMap.get(ip);
+  if (!rateData || now > rateData.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + WINDOW_MS });
+  } else {
+    rateData.count++;
+    if (rateData.count > RATE_LIMIT) {
+      return NextResponse.json(
+        { success: false, error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      );
+    }
+  }
+
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+
   try {
     const body = await request.json();
     const {

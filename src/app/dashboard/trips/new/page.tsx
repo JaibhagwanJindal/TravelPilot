@@ -2,8 +2,17 @@
 
 import { useState } from "react"
 import { TripForm } from "@/features/trips/components/trip-form"
-import { TripItinerary } from "@/features/trips/components/trip-itinerary"
 import { GeneratedTripResponse } from "@/types/trip"
+import dynamic from "next/dynamic"
+
+const TripItinerary = dynamic(() => import("@/features/trips/components/trip-itinerary").then((mod) => mod.TripItinerary), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-64 items-center justify-center">
+      <div className="text-muted-foreground animate-pulse">Loading itinerary component...</div>
+    </div>
+  ),
+})
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
