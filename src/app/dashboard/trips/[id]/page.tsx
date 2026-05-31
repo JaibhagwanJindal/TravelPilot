@@ -8,11 +8,17 @@ export default async function TripDetailsPage({ params }: { params: Promise<{ id
   const supabase = await createClient();
   const { id } = await params;
   
-  const { data: trip } = await supabase
-    .from('trips')
-    .select('*')
-    .eq('id', id)
-    .single();
+  let trip = null;
+  try {
+    const { data } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('id', id)
+      .single();
+    trip = data;
+  } catch (e) {
+    console.error("Trip details fetch error:", e);
+  }
 
   if (!trip) {
     notFound();

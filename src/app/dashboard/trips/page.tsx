@@ -10,10 +10,16 @@ export const dynamic = 'force-dynamic';
 
 export default async function TripsPage() {
   const supabase = await createClient();
-  const { data: trips } = await supabase
-    .from('trips')
-    .select('*')
-    .order('created_at', { ascending: false });
+  let trips: any[] | null = [];
+  try {
+    const { data } = await supabase
+      .from('trips')
+      .select('*')
+      .order('created_at', { ascending: false });
+    trips = data;
+  } catch (e) {
+    console.error("Trips fetch error:", e);
+  }
 
   return (
     <div className="space-y-6">

@@ -8,11 +8,17 @@ export default async function SettingsPage() {
   
   // For a hackathon without strict Auth, we'll just fetch the first settings row
   // or create a generic default one.
-  const { data: settings } = await supabase
-    .from('settings')
-    .select('*')
-    .limit(1)
-    .single()
+  let settings = null;
+  try {
+    const { data } = await supabase
+      .from('settings')
+      .select('*')
+      .limit(1)
+      .single()
+    settings = data;
+  } catch (e) {
+    console.error("Settings fetch error:", e);
+  }
 
   return (
     <div className="space-y-6">

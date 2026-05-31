@@ -10,11 +10,18 @@ export const dynamic = 'force-dynamic';
 export default async function Dashboard() {
   const supabase = await createClient();
   
-  // Fetch real data from Supabase
-  const { data: trips } = await supabase
-    .from('trips')
-    .select('*')
-    .order('created_at', { ascending: false });
+  let trips: any[] | null = [];
+  
+  try {
+    const { data } = await supabase
+      .from('trips')
+      .select('*')
+      .order('created_at', { ascending: false });
+    trips = data;
+  } catch (error) {
+    console.error("Failed to fetch trips:", error);
+    // Ignore error and fall back to empty trips array
+  }
 
   const totalTrips = trips?.length || 0;
   
