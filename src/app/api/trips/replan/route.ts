@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     Day Number: ${day}
     Planned Budget (Total for trip): $${plannedBudget}
     Current Weather: ${weather?.condition || 'Unknown'} - ${weather?.description || ''} (Temp: ${weather?.temp || 'Unknown'}°C, Raining: ${weather?.isRaining})
-    Constraints & Requirements: ${constraints?.length ? constraints.join(", ") : "None"}
+    Constraints & Requirements: ${Array.isArray(constraints) && constraints.length ? constraints.join(", ") : "None"}
     
     Here is the CURRENT itinerary for Day ${day}:
     ${JSON.stringify(currentItinerary, null, 2)}

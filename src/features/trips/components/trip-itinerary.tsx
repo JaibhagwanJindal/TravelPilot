@@ -216,7 +216,7 @@ export function TripItinerary({ trip: initialTrip }: TripItineraryProps) {
             <span className="flex items-center gap-1"><Calendar className="h-4 w-4" /> {tripData.days.length} Days</span>
             {tripData.constraints?.length > 0 && (
               <span className="flex items-center gap-1 text-primary text-sm font-medium">
-                Constraints: {tripData.constraints.join(", ")}
+                Constraints: {(Array.isArray(tripData.constraints) ? tripData.constraints : []).join(", ")}
               </span>
             )}
           </div>
